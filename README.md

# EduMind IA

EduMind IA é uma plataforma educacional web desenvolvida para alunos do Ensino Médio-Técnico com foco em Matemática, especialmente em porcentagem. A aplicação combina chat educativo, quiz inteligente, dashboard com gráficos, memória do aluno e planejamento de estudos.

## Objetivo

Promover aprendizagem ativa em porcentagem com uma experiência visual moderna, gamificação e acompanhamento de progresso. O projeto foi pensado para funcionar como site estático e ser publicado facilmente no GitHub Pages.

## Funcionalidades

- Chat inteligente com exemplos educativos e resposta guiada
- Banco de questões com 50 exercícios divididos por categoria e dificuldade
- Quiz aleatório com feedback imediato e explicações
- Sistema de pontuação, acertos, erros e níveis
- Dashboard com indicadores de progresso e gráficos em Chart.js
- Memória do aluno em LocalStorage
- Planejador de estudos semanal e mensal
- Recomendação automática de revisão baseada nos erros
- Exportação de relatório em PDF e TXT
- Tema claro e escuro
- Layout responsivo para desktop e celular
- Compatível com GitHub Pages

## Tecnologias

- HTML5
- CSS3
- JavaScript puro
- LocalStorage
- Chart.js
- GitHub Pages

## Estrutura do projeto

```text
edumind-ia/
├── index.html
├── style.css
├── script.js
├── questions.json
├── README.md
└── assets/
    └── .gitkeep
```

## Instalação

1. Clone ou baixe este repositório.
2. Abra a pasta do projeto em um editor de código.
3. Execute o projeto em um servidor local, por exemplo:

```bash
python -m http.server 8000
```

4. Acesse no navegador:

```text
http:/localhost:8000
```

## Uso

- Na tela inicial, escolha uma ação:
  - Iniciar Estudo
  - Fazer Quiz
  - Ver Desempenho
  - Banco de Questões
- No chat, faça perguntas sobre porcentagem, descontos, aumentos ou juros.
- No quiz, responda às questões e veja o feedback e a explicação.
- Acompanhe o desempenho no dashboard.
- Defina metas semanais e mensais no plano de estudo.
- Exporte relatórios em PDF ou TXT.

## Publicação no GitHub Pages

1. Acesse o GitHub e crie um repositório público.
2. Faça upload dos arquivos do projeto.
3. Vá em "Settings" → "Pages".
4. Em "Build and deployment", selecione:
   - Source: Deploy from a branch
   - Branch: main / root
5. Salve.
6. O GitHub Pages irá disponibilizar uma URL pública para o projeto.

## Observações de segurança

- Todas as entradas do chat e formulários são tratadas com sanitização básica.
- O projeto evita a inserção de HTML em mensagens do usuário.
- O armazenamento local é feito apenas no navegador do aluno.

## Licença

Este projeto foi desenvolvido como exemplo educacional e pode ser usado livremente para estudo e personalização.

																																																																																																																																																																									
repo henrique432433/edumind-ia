@@ -1,0 +1,619 @@
+const STORAGE_KEY = 'edumindIA_state';
+const defaultState = {
+  nome: '',
+  pontuacao: 0,
+  acertos: 0,
+  erros: 0,
+  nivel: 'Iniciante',
+  questoesRespondidas: 0,
+  conversas: [],
+  perguntas: [],
+  progresso: {
+    weeklyMeta: 5,
+    weeklyAtual: 0,
+    monthlyMeta: 20,
+    monthlyAtual: 0
+  },
+  theme: 'light',
+  quiz: {
+    current: null,
+    answered: false,
+    streak: 0,
+    lastCategory: ''
+  },
+  erroCategoria: {}
+};
+
+const state = loadState();
+const sectionButtons = document.querySelectorAll('.nav-item');
+const primaryButtons = document.querySelectorAll('[data-target]');
+const chatMessages = document.getElementById('chatMessages');
+const chatForm = document.getElementById('chatForm');
+const chatInput = document.getElementById('chatInput');
+const chatSuggestions = document.getElementById('chatSuggestions');
+const studentNameInput = document.getElementById('studentNameInput');
+const saveStudentNameBtn = document.getElementById('saveStudentName');
+const themeToggle = document.getElementById('themeToggle');
+const questionsList = document.getElementById('questionsList');
+const categoryFilter = document.getElementById('categoryFilter');
+const difficultyFilter = document.getElementById('difficultyFilter');
+const quizQuestion = document.getElementById('quizQuestion');
+const quizOptions = document.getElementById('quizOptions');
+const quizFeedback = document.getElementById('quizFeedback');
+const nextQuestionBtn = document.getElementById('nextQuestionBtn');
+const exportPdfBtn = document.getElementById('exportPdfBtn');
+const exportTxtBtn = document.getElementById('exportTxtBtn');
+const weeklyGoalInput = document.getElementById('weeklyGoal');
+const monthlyGoalInput = document.getElementById('monthlyGoal');
+const saveGoalsBtn = document.getElementById('saveGoalsBtn');
+
+let quizChart = null;
+let categoryChart = null;
+let currentQuizQuestion = null;
+
+initializeApp();
+
+function initializeApp() {
+  setupTheme();
+  setupStudentProfile();
+  setupNavigation();
+  bindEvents();
+  loadQuestions();
+  renderChatSuggestions();
+  renderPlannerProgress();
+  updateDashboard();
+  generateWelcomeMessage();
+  renderQuestionBank();
+  renderHomeProgress();
+  showSection('home');
+  setTimeout(() => {
+    if (!state.quiz.current) {
+      startQuiz();
+    }
+  }, 100);
+}
+
+function loadState() {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return structuredClone(defaultState);
+
+  try {
+    const parsed = JSON.parse(raw);
+    return { ...structuredClone(defaultState), ...parsed, progresso: { ...defaultState.progresso, ...(parsed.progresso || {}) }, quiz: { ...defaultState.quiz, ...(parsed.quiz || {}) }, erroCategoria: parsed.erroCategoria || {} };
+  } catch (error) {
+    return structuredClone(defaultState);
+  }
+}
+
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+}
+
+function setupTheme() {
+  const effectiveTheme = state.theme || 'light';
+  document.body.classList.toggle('dark', effectiveTheme === 'dark');
+  themeToggle.textContent = effectiveTheme === 'dark' ? '☀️' : '🌙';
+}
+
+function setupStudentProfile() {
+  studentNameInput.value = state.nome || '';
+}
+
+function setupNavigation() {
+  sectionButtons.forEach((button) => {
+    button.addEventListener('click', () => showSection(button.dataset.section));
+  });
+
+  primaryButtons.forEach((button) => {
+    button.addEventListener('click', () => {
+      const target = button.dataset.target;
+      if (target) showSection(target);
+    });
+  });
+}
+
+function bindEvents() {
+  saveStudentNameBtn.addEventListener('click', () => {
+    const nome = sanitizeInput(studentNameInput.value);
+    state.nome = nome;
+    saveState();
+    if (nome) {
+      addChatMessage('bot', `Olá, ${nome}! Como posso ajudar você hoje com porcentagem?`);
+      renderChatSuggestions();
+    }
+  });
+
+  themeToggle.addEventListener('click', () => {
+    state.theme = state.theme === 'dark' ? 'light' : 'dark';
+    document.body.classList.toggle('dark', state.theme === 'dark');
+    themeToggle.textContent = state.theme === 'dark' ? '☀️' : '🌙';
+    saveState();
+  });
+
+  chatForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const pergunta = sanitizeInput(chatInput.value);
+    if (!pergunta) return;
+
+    addChatMessage('user', pergunta);
+    chatInput.value = '';
+    const resposta = gerarRespostaIA(pergunta);
+    addChatMessage('bot', resposta);
+    saveState();
+  });
+
+  categoryFilter.addEventListener('change', renderQuestionBank);
+  difficultyFilter.addEventListener('change', renderQuestionBank);
+
+  nextQuestionBtn.addEventListener('click', () => {
+    startQuiz();
+  });
+
+  saveGoalsBtn.addEventListener('click', () => {
+    const weeklyMeta = Number(weeklyGoalInput.value) || 5;
+    const monthlyMeta = Number(monthlyGoalInput.value) || 20;
+    state.progresso.weeklyMeta = weeklyMeta;
+    state.progresso.monthlyMeta = monthlyMeta;
+    saveState();
+    renderPlannerProgress();
+  });
+
+  exportTxtBtn.addEventListener('click', exportReportTXT);
+  exportPdfBtn.addEventListener('click', exportReportPDF);
+}
+
+function showSection(sectionName) {
+  const sections = document.querySelectorAll('.content-section');
+  sections.forEach((section) => {
+    section.classList.toggle('active', section.id === sectionName);
+  });
+
+  sectionButtons.forEach((button) => {
+    button.classList.toggle('active', button.dataset.section === sectionName);
+  });
+}
+
+function renderHomeProgress() {
+  const total = state.acertos + state.erros;
+  const percent = total === 0 ? 0 : Math.round((state.acertos / total) * 100);
+  const homeProgressText = document.getElementById('homeProgressText');
+  homeProgressText.textContent = `${percent}% concluído`;
+}
+
+function renderChatSuggestions() {
+  const suggestions = [
+    'Quanto é 25% de 80?',
+    'Como calcular um desconto de 15%?',
+    'Explique juros simples.',
+    'Dê uma dica de estudo para porcentagem.'
+  ];
+
+  chatSuggestions.innerHTML = suggestions
+    .map(
+      (item) =>
+        `<button type="button" class="suggestion-chip" data-suggestion="${escapeHtml(item)}">${escapeHtml(item)}</button>`
+    )
+    .join('');
+
+  chatSuggestions.querySelectorAll('.suggestion-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const value = chip.dataset.suggestion;
+      chatInput.value = value;
+      chatInput.focus();
+    });
+  });
+}
+
+function addChatMessage(role, text) {
+  const message = document.createElement('div');
+  message.className = `message ${role}`;
+  message.textContent = text;
+  chatMessages.appendChild(message);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  state.conversas.push({ role, text, time: new Date().toISOString() });
+  saveState();
+}
+
+function generateWelcomeMessage() {
+  if (state.conversas.length > 0) return;
+
+  const greeting = state.nome
+    ? `Olá, ${state.nome}! Eu sou MARQIV, sua IA de estudos. Vamos aprender porcentagem passo a passo.`
+    : 'Olá! Eu sou MARQIV, sua IA de estudos. Vamos aprender porcentagem do jeito mais claro possível.';
+
+  addChatMessage('bot', greeting);
+}
+
+function sanitizeInput(value) {
+  return String(value || '')
+    .replace(/<script|<iframe|<img|<svg/gi, '')
+    .replace(/[<>]/g, '')
+    .trim();
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function getNivel(pontuacao) {
+  if (pontuacao >= 250) return 'Especialista';
+  if (pontuacao >= 180) return 'Avançado';
+  if (pontuacao >= 120) return 'Intermediário';
+  if (pontuacao >= 60) return 'Aprendiz';
+  return 'Iniciante';
+}
+
+function updateDashboard() {
+  const aproveitamento = state.acertos + state.erros === 0 ? 0 : Math.round((state.acertos / (state.acertos + state.erros)) * 100);
+  state.nivel = getNivel(state.pontuacao);
+
+  document.getElementById('scoreValue').textContent = state.pontuacao;
+  document.getElementById('hitsValue').textContent = state.acertos;
+  document.getElementById('missesValue').textContent = state.erros;
+  document.getElementById('successRateValue').textContent = `${aproveitamento}%`;
+  document.getElementById('levelValue').textContent = state.nivel;
+  document.getElementById('answeredValue').textContent = state.questoesRespondidas;
+
+  const progressPercent = Math.min(((state.pontuacao % 250) / 250) * 100, 100);
+  document.getElementById('progressLabel').textContent = `${Math.round(progressPercent)}%`;
+  document.getElementById('progressBar').style.width = `${progressPercent}%`;
+
+  renderRecommendation();
+  renderCharts();
+  renderHomeProgress();
+  saveState();
+}
+
+function renderCharts() {
+  const correct = state.acertos;
+  const wrong = state.erros;
+
+  const ctxResult = document.getElementById('resultsChart');
+  if (ctxResult) {
+    if (quizChart) quizChart.destroy();
+    quizChart = new Chart(ctxResult, {
+      type: 'doughnut',
+      data: {
+        labels: ['Acertos', 'Erros'],
+        datasets: [{
+          data: [correct, wrong],
+          backgroundColor: ['#4f46e5', '#ef4444'],
+          borderWidth: 0
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: {
+            position: 'bottom'
+          }
+        }
+      }
+    });
+  }
+
+  const categoryCounts = getCategorySummary();
+  const categoryLabels = Object.keys(categoryCounts);
+  const categoryData = Object.values(categoryCounts);
+
+  const ctxCategory = document.getElementById('categoryChart');
+  if (ctxCategory) {
+    if (categoryChart) categoryChart.destroy();
+    categoryChart = new Chart(ctxCategory, {
+      type: 'bar',
+      data: {
+        labels: categoryLabels.length ? categoryLabels : ['Sem dados'],
+        datasets: [{
+          label: 'Questões respondidas',
+          data: categoryData.length ? categoryData : [0],
+          backgroundColor: ['#7c3aed', '#4f46e5', '#22c55e', '#f59e0b', '#06b6d4']
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            beginAtZero: true,
+            precision: 0
+          }
+        }
+      }
+    });
+  }
+}
+
+function getCategorySummary() {
+  const categories = ['Conceitos Básicos', 'Descontos', 'Aumentos', 'Juros Simples', 'Problemas do Cotidiano'];
+  const counts = Object.fromEntries(categories.map((category) => [category, 0]));
+
+  if (!state.quiz || !state.quiz.lastCategory) return counts;
+
+  const record = { ...state.erroCategoria };
+  Object.keys(record).forEach((cat) => {
+    counts[cat] = record[cat];
+  });
+
+  return counts;
+}
+
+function renderRecommendation() {
+  const recommendationBox = document.getElementById('recommendationBox');
+  const categoryOrder = ['Descontos', 'Aumentos', 'Juros Simples', 'Conceitos Básicos', 'Problemas do Cotidiano'];
+  let worstCategory = null;
+  let worstScore = -1;
+
+  categoryOrder.forEach((category) => {
+    const count = state.erroCategoria[category] || 0;
+    if (count > worstScore) {
+      worstScore = count;
+      worstCategory = category;
+    }
+  });
+
+  if (worstCategory && worstScore > 0) {
+    recommendationBox.innerHTML = `
+      <strong>Recomendação de estudo</strong>
+      <span>Recomendamos revisar <strong>${worstCategory}</strong> antes de continuar. A prática com exercícios dessa categoria pode melhorar seu desempenho geral.</span>
+    `;
+  } else {
+    recommendationBox.innerHTML = `
+      <strong>Bom progresso</strong>
+      <span>Você está no caminho certo! Continue praticando porcentagem para fortalecer ainda mais sua base.</span>
+    `;
+  }
+}
+
+function loadQuestions() {
+  fetch('questions.json')
+    .then((response) => response.json())
+    .then((data) => {
+      state.perguntas = data;
+      saveState();
+      renderQuestionBank();
+      if (!state.quiz.current) startQuiz();
+    })
+    .catch(() => {
+      console.error('Não foi possível carregar questions.json');
+    });
+}
+
+function renderQuestionBank() {
+  const category = categoryFilter.value;
+  const difficulty = difficultyFilter.value;
+
+  const filtered = state.perguntas.filter((question) => {
+    const matchesCategory = category === 'all' || question.categoria === category;
+    const matchesDifficulty = difficulty === 'all' || question.dificuldade === difficulty;
+    return matchesCategory && matchesDifficulty;
+  });
+
+  if (!filtered.length) {
+    questionsList.innerHTML = '<div class="question-card"><p>Nenhuma questão encontrada para os filtros selecionados.</p></div>';
+    return;
+  }
+
+  questionsList.innerHTML = filtered
+    .map(
+      (question) => `
+        <article class="question-card">
+          <div class="card-topline">
+            <span class="meta-badge">${escapeHtml(question.categoria)}</span>
+            <span class="meta-badge">${escapeHtml(question.dificuldade)}</span>
+          </div>
+          <h4>${escapeHtml(question.pergunta)}</h4>
+          <div class="question-meta">
+            <span class="meta-badge">Resposta: ${escapeHtml(question.resposta)}</span>
+          </div>
+          <p>${escapeHtml(question.explicacao)}</p>
+        </article>
+      `
+    )
+    .join('');
+}
+
+function startQuiz() {
+  if (!state.perguntas.length) return;
+
+  const randomQuestion = state.perguntas[Math.floor(Math.random() * state.perguntas.length)];
+  currentQuizQuestion = randomQuestion;
+  state.quiz.current = randomQuestion;
+  state.quiz.answered = false;
+
+  quizQuestion.textContent = randomQuestion.pergunta;
+  document.getElementById('quizDifficulty').textContent = randomQuestion.dificuldade;
+  document.getElementById('quizCategory').textContent = randomQuestion.categoria;
+
+  const options = Array.isArray(randomQuestion.alternativas) ? randomQuestion.alternativas : gerarAlternativas(randomQuestion);
+  quizOptions.innerHTML = options
+    .map(
+      (option) => `<button class="option-btn" data-option="${escapeHtml(option)}">${escapeHtml(option)}</button>`
+    )
+    .join('');
+
+  quizFeedback.className = 'quiz-feedback';
+  quizFeedback.textContent = '';
+  nextQuestionBtn.classList.add('hidden');
+
+  quizOptions.querySelectorAll('.option-btn').forEach((button) => {
+    button.addEventListener('click', () => answerQuestion(button, randomQuestion, button.dataset.option));
+  });
+
+  saveState();
+}
+
+function gerarAlternativas(question) {
+  const base = Number(question.resposta);
+  if (Number.isFinite(base)) {
+    const variations = [base - 10, base + 15, base + 30, base - 5, base + 5, base + 10];
+    const uniqueValues = [...new Set(variations.filter((value) => value > 0))];
+    const options = [question.resposta, ...uniqueValues].slice(0, 4);
+    return options.map((value) => String(value));
+  }
+
+  return ['A', 'B', 'C', 'D'];
+}
+
+function answerQuestion(button, question, selectedValue) {
+  if (state.quiz.answered) return;
+
+  const correct = String(question.resposta) === String(selectedValue);
+  const buttons = quizOptions.querySelectorAll('.option-btn');
+
+  buttons.forEach((btn) => {
+    btn.disabled = true;
+    const option = btn.dataset.option;
+    if (String(option) === String(question.resposta)) {
+      btn.classList.add('correct');
+    }
+    if (String(option) === String(selectedValue) && !correct) {
+      btn.classList.add('incorrect');
+    }
+  });
+
+  state.quiz.answered = true;
+  state.questoesRespondidas += 1;
+
+  if (correct) {
+    state.acertos += 1;
+    state.pontuacao += 10;
+    state.quiz.streak += 1;
+    if (state.quiz.streak > 0) {
+      state.pontuacao += 5;
+    }
+    quizFeedback.className = 'quiz-feedback visible success';
+    quizFeedback.textContent = `Resposta correta! +10 pontos + bônus de sequência. Explicação: ${question.explicacao}`;
+    state.erroCategoria[question.categoria] = Math.max(0, (state.erroCategoria[question.categoria] || 0));
+  } else {
+    state.erros += 1;
+    state.quiz.streak = 0;
+    state.erroCategoria[question.categoria] = (state.erroCategoria[question.categoria] || 0) + 1;
+    quizFeedback.className = 'quiz-feedback visible error';
+    quizFeedback.textContent = `Resposta incorreta. A resposta correta é ${question.resposta}. ${question.explicacao}`;
+  }
+
+  state.pontuacao = Math.max(0, state.pontuacao);
+  state.quiz.lastCategory = question.categoria;
+  saveState();
+  updateDashboard();
+  nextQuestionBtn.classList.remove('hidden');
+}
+
+function renderPlannerProgress() {
+  const weeklyMeta = Number(weeklyGoalInput.value) || 5;
+  const monthlyMeta = Number(monthlyGoalInput.value) || 20;
+
+  state.progresso.weeklyMeta = weeklyMeta;
+  state.progresso.monthlyMeta = monthlyMeta;
+
+  const weeklyPercent = Math.min((state.progresso.weeklyAtual / weeklyMeta) * 100, 100) || 0;
+  const monthlyPercent = Math.min((state.progresso.monthlyAtual / monthlyMeta) * 100, 100) || 0;
+
+  document.getElementById('weeklyProgressBar').style.width = `${weeklyPercent}%`;
+  document.getElementById('monthlyProgressBar').style.width = `${monthlyPercent}%`;
+  document.getElementById('weeklyProgressText').textContent = `${state.progresso.weeklyAtual}/${weeklyMeta}`;
+  document.getElementById('monthlyProgressText').textContent = `${state.progresso.monthlyAtual}/${monthlyMeta}`;
+
+  if (!state.progresso.weeklyAtual && !state.progresso.monthlyAtual) {
+    state.progresso.weeklyAtual = Math.min(state.acertos, weeklyMeta);
+    state.progresso.monthlyAtual = Math.min(state.acertos, monthlyMeta);
+  }
+}
+
+function gerarRespostaIA(pergunta) {
+  const entrada = pergunta.toLowerCase();
+  const nome = state.nome || 'aluno';
+
+  if (/(desconto|oferta|ganho|liquido)/.test(entrada)) {
+    const matchPercent = entrada.match(/(\d+)\s*%/);
+    const matchValue = entrada.match(/de\s*(\d+)/);
+    const percentual = matchPercent ? Number(matchPercent[1]) : 10;
+    const valor = matchValue ? Number(matchValue[1]) : 200;
+    const desconto = (valor * percentual) / 100;
+    const final = valor - desconto;
+
+    return `Vamos resolver isso passo a passo, ${nome}. Primeiro, o desconto é ${percentual}% de ${valor}. Como 15% = 15/100 = 0,15, calculamos: ${valor} × 0,15 = ${desconto}. Então o valor com desconto fica ${valor} - ${desconto} = ${final}. Lembre-se: para calcular desconto, você encontra o percentual do valor original e subtrai do total. Quer praticar com outro exemplo?`;
+  }
+
+  if (/(aumento|acrescimo|reajuste|incremento)/.test(entrada)) {
+    const matchPercent = entrada.match(/(\d+)\s*%/);
+    const matchValue = entrada.match(/de\s*(\d+)/);
+    const percentual = matchPercent ? Number(matchPercent[1]) : 12;
+    const valor = matchValue ? Number(matchValue[1]) : 300;
+    const aumento = (valor * percentual) / 100;
+    const total = valor + aumento;
+
+    return `Para aumento percentual, primeiro calculamos o valor do aumento: ${valor} × ${percentual}/100 = ${aumento}. Depois somamos ao valor inicial: ${valor} + ${aumento} = ${total}. Então o total final é ${total}. Isso mostra que o aumento percentual acrescenta uma parte ao valor original. Posso criar outro exercício do mesmo tipo.`;
+  }
+
+  if (/(juros simples|juros)/.test(entrada)) {
+    const juros = 1000 * 0.08 * 2;
+    return `Em juros simples, usamos a fórmula J = C × i × t. Se o capital for 1000, a taxa 8% ao ano e o tempo 2 anos, então J = 1000 × 0,08 × 2 = ${juros}. O montante final será 1000 + ${juros} = ${1000 + juros}. Entenda que juros simples cresce de forma linear ao longo do tempo. Quer ver um exercício resolvido passo a passo?`;
+  }
+
+  if (/(dica|estudar|estudo|aprenda)/.test(entrada)) {
+    return `Uma boa dica é transformar porcentagem em frações e decimais. Por exemplo, 25% = 25/100 = 0,25. Faça 5 exercícios por dia e sempre escreva o passo a passo. Isso ajuda muito no Ensino Médio-Técnico, porque você aprende a lógica e não apenas a resposta final. Quero te sugerir um exercício?`;
+  }
+
+  if (entrada.includes('x') || /\d+\s*%\s*de\s*\d+/.test(entrada)) {
+    const matchPercent = entrada.match(/(\d+)\s*%/);
+    const matchValue = entrada.match(/de\s*(\d+)/);
+    if (matchPercent && matchValue) {
+      const percentual = Number(matchPercent[1]);
+      const valor = Number(matchValue[1]);
+      const resultado = (valor * percentual) / 100;
+
+      return `Vamos resolver isso por etapas. Primeiro, transforme ${percentual}% em decimal: ${percentual}/100 = ${percentual / 100}. Depois, multiplique pelo valor: ${valor} × ${percentual / 100} = ${resultado}. Portanto, ${percentual}% de ${valor} é ${resultado}. Sempre que você achar a porcentagem, pense em “cortar” ou “acrescentar” uma parte do total. Se quiser, posso também montar um exercício parecido.`;
+    }
+  }
+
+  return `Vamos pensar juntos. Porcentagem representa uma parte de 100. Por exemplo, 20% significa 20 em cada 100. Para resolver problemas: 1) identifique o valor total; 2) transforme a porcentagem em decimal ou fração; 3) multiplique ou divida conforme o problema pedir; 4) confira se a resposta faz sentido. Posso te ajudar com exercício, revisão ou dica rápida sobre descontos, aumentos ou juros. `;
+}
+
+function exportReportTXT() {
+  const content = [
+    'EduMind IA - Relatório do Aluno',
+    `Nome: ${state.nome || 'Aluno'}`,
+    `Pontuação: ${state.pontuacao}`,
+    `Acertos: ${state.acertos}`,
+    `Erros: ${state.erros}`,
+    `Aproveitamento: ${state.acertos + state.erros === 0 ? 0 : Math.round((state.acertos / (state.acertos + state.erros)) * 100)}%`,
+    `Nível: ${state.nivel}`,
+    `Questões resolvidas: ${state.questoesRespondidas}`
+  ].join('\n');
+
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'edumind-relatorio.txt';
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportReportPDF() {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  doc.setFontSize(18);
+  doc.text('EduMind IA - Relatório', 14, 20);
+  doc.setFontSize(12);
+  doc.text(`Nome: ${state.nome || 'Aluno'}`, 14, 36);
+  doc.text(`Pontuação: ${state.pontuacao}`, 14, 46);
+  doc.text(`Acertos: ${state.acertos}`, 14, 56);
+  doc.text(`Erros: ${state.erros}`, 14, 66);
+  doc.text(`Aproveitamento: ${state.acertos + state.erros === 0 ? 0 : Math.round((state.acertos / (state.acertos + state.erros)) * 100)}%`, 14, 76);
+  doc.text(`Nível: ${state.nivel}`, 14, 86);
+  doc.text(`Questões resolvidas: ${state.questoesRespondidas}`, 14, 96);
+  doc.save('edumind-relatorio.pdf');
+}
+
+window.addEventListener('beforeunload', saveState);
+
+																																																																																																																																																																																																																																																																																																																																																																																																																																																																																															",
